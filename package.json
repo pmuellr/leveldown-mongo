@@ -1,0 +1,28 @@
+{
+    "name":                         "leveldown-mongo",
+    "version":                      "0.1.0",
+    "description":                  "level down API for the browser",
+    "tags":                         [ "leveldown"],
+    "main":                         "lib/index.js",
+    "author":                       "pmuellr",
+    "license":                      "Apache License",
+    "homepage":                     "https://github.com/pmuellr/leveldown-mongo",
+    "bugs":                         "https://github.com/pmuellr/leveldown-mongo/issues",
+    "repository": {
+        "type":                     "git", 
+        "url":                      "git://github.com/pmuellr/leveldown-mongo" 
+    },
+    "dependencies": {
+        "abstract-leveldown":       "0.11.x",
+        "mongodb":                  "1.3.x",
+        "underscore":               "1.5.x"
+    },
+    "devDependencies": {
+        "coffee-script":            "1.6.x",
+        "grunt":                    "0.4.x",
+        "grunt-contrib-watch":      "0.5.x",
+        "rimraf":                   "2.2.x",
+        "shelljs":                  "0.2.6",
+        "tape":                     "2.1.x"
+    }
+}
