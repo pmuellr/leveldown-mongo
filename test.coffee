@@ -2,22 +2,53 @@
 
 DB_URL = process.env.DB_URL || "mongodb://localhost:27017/leveldown-mongo-tests"
 
+path = require "path"
+
 test            = require "tape"
 testCommon      = require "abstract-leveldown/testCommon"
 mongodb         = require "mongodb"
+
 MongoLevelDown  = require "./"
 
+# hack location et al from testCommon - names are too long
+
+testCommon.locationOriginal     = testCommon.location
+testCommon.lastLocationOriginal = testCommon.lastLocation
+
+testCommon.location = -> 
+    name = path.basename testCommon.locationOriginal()
+    name.replace("_leveldown_test_db_", "test")
+
+testCommon.lastLocation = -> 
+    name = path.basename testCommon.lastLocationOriginal()
+    name.replace("_leveldown_test_db_", "test")
+
+testCommon.setUp = (t) -> 
+    testCommon.cleanup (err) ->
+        t.notOk err, "cleanup returned an error: #{err}"
+        t.end()
+
+testCommon.tearDown = testCommon.setUp
+
+testCommon.cleanup  = (callback) ->
+    mongodb.MongoClient.connect DB_URL, (err, mdb) ->
+        mdb.dropDatabase callback if callback?
+
+
 mongodb.MongoClient.connect DB_URL, (err, mdb) ->
-    runTest mdb, "open-test", "args"
-    runTest mdb, "open-test", "open"
-    runTest mdb, "del-test"
-    runTest mdb, "get-test"
-    runTest mdb, "put-test"
-    runTest mdb, "batch-test"
-    runTest mdb, "chained-batch-test"
-    runTest mdb, "close-test", "close"
+    # runTest mdb, "open-test", "args"
+    # runTest mdb, "open-test", "open"
+    # runTest mdb, "del-test"
+    # runTest mdb, "get-test"
+    # runTest mdb, "put-test"
+    # runTest mdb, "batch-test"
+    # runTest mdb, "close-test", "close"
+
     runTest mdb, "iterator-test"
-    runTest mdb, "ranges-test"
+    # runTest mdb, "chained-batch-test"
+    # runTest mdb, "ranges-test"
+
+    setTimeout (-> process.exit 0), 1 * 1000
 
 #-------------------------------------------------------------------------------
 runTest = (mdb, name, fn="all") ->

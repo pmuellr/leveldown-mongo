@@ -1,5 +1,7 @@
 # Licensed under the Apache License. See footer for details.
 
+Debug = true
+
 buffer = require "buffer"
 
 _       = require "underscore"
@@ -23,14 +25,14 @@ module.exports = (mdb) ->
 
         #-----------------------------------------------------------------------
         @destroy: (location, callback) ->
-            # console.log "MongoLeveldown::destroy(#{location})"
+            console.log "MongoLeveldown::destroy(#{location})" if Debug
             mdb.dropCollection location, (err) ->
                 return callback(err) if err
                 return callback()
 
         #-----------------------------------------------------------------------
         @repair: (location, callback) ->
-            # console.log "MongoLeveldown::repair(#{location})"
+            console.log "MongoLeveldown::repair(#{location})" if Debug
             process.nextTick -> callback()
 
         #-----------------------------------------------------------------------
@@ -38,14 +40,14 @@ module.exports = (mdb) ->
             unless @ instanceof MongoLeveldown
                 return new MongoLeveldown location, options
 
-            # console.log "new MongoLeveldown(#{location}, #{JS options})"
+            console.log "new MongoLeveldown(#{location}, #{JS options})" if Debug
 
             # superclass set's @location to first argument
             super location, options
 
         #-----------------------------------------------------------------------
         _open: (options, callback) ->
-            # console.log "MongoLeveldown._open(#{@location}, #{JS options})"
+            console.log "MongoLeveldown._open(#{@location}, #{JS options})" if Debug
 
             mdbOptions =
                 w:      1
@@ -62,11 +64,20 @@ module.exports = (mdb) ->
 
                 @coll = coll
 
-                return callback()
+                indexOpts = 
+                    w:          1
+                    fsync:      true
+                    unique:     true
+                    dropDups:   true
+                    name:       "level-db-key"
+
+                coll.ensureIndex {key:1}, indexOpts, (err) ->
+                    return callback err if err?
+                    callback()
 
         #-----------------------------------------------------------------------
         _close: (callback) ->
-            # console.log "MongoLeveldown._close(#{@location})"
+            console.log "MongoLeveldown._close(#{@location})" if Debug
 
             process.nextTick -> callback()
         
@@ -75,12 +86,12 @@ module.exports = (mdb) ->
             options ?= {}
             options.asBuffer = true unless options.asBuffer?
 
-            # console.log "MongoLeveldown._get(#{@location}, #{JS key}, #{JS options})"
+            console.log "MongoLeveldown._get(#{@location}, #{JS key}, #{JS options})" if Debug
 
             @coll.findOne {key}, (err, doc) =>
                 return callback err if err?
 
-                # console.log "_get(#{key}): #{JSON.stringify doc}"
+                console.log "_get(#{key}): #{JSON.stringify doc}" if Debug
                 unless doc?
                     return callback Error "NotFound"
 
@@ -92,7 +103,7 @@ module.exports = (mdb) ->
         
         #-----------------------------------------------------------------------
         _put: (key, val, options, callback) ->
-            # console.log "MongoLeveldown._put(#{@location}, #{JS key}, #{JS val}, #{JS options})"
+            console.log "MongoLeveldown._put(#{@location}, #{JS key}, #{JS val}, #{JS options})" if Debug
 
             mdbOptions = w: 1
 
@@ -101,7 +112,7 @@ module.exports = (mdb) ->
             doc = {key, val}
             doc.val = val.toString "utf8" if isBuffer val
 
-            # console.log "_put(#{key}): #{JSON.stringify doc}"
+            console.log "_put(#{key}): #{JSON.stringify doc}" if Debug
 
             @coll.remove {key}, mdbOptions, (err) =>
                 return callback err if err?
@@ -112,7 +123,7 @@ module.exports = (mdb) ->
         
         #-----------------------------------------------------------------------
         _del: (key, options, callback) ->
-            # console.log "MongoLeveldown._del(#{@location}, #{JS key}, #{JS options})"
+            console.log "MongoLeveldown._del(#{@location}, #{JS key}, #{JS options})" if Debug
 
             mdbOptions = w: 1
 
@@ -124,8 +135,8 @@ module.exports = (mdb) ->
         
         #-----------------------------------------------------------------------
         _batch: (array, options, callback) ->
-            # console.log "MongoLeveldown._batch(#{@location}, #{JS options})"
-            # console.log "#{JL array}"
+            console.log "MongoLeveldown._batch(#{@location}, #{JS options})" if Debug
+            console.log "#{JL array}" if Debug
 
             for {type, key, value} in array
                 val = value
@@ -140,8 +151,120 @@ module.exports = (mdb) ->
         
         #-----------------------------------------------------------------------
         _approximateSize: (start, end, callback) ->
-            # console.log "MongoLeveldown._approximateSize(#{@location})"
+            console.log "MongoLeveldown._approximateSize(#{@location})" if Debug
             return 0
+
+        #-----------------------------------------------------------------------
+        _iterator: (options) ->
+            return new MongoLeveldownIterator @, options
+
+        #-----------------------------------------------------------------------
+        _find4iterator: (options, callback) ->
+            fields = {}
+            fields.key = 1 if options.keys
+            fields.val = 1 if options.values
+
+            if options.limit isnt -1
+                fields.array = $slice: options.limit
+
+            query = {}
+
+            if options.exclusiveStart
+                gtKey = "$gt"
+            else
+                gtKey = "$gte"
+
+            if options.start? and options.end?
+                query.$and = [
+                    {key: {}}
+                    {key: $lte: options.end}
+                ]
+                query.$and[0][key][gtKey] = options.start
+
+            else if options.start?
+                query.key = {}
+                query.key[gtKey] = options.start
+            else if options.end?
+                query.key = $lte: options.end
+
+            console.log "coll.find(\n#{JL query},\n#{JL fields})"    
+
+            if options.reverse
+                sortOrder = -1
+            else
+                sortOrder =  1
+
+            return @coll.find(query, fields).sort(key:sortOrder)
+
+#-------------------------------------------------------------------------------
+class MongoLeveldownIterator extends AbstractLeveldown.AbstractIterator
+
+    constructor: (db, options) ->
+
+        # superclass set's @db to first argument
+        super db
+
+        # abstract iterator doesn't cache options, so we do
+        # options include the undocumented `exclusiveStart`
+        # property, in support of the other undocumented properties
+        # `lt`, `gt`, etc.  `exclusiveStart` means "skip the first
+        # iterated item if it matches the start key passed in"
+        #     - skip start if found; for lt/gt/etc undocumented opts
+
+        @_options =
+            start          : options.start
+            end            : options.end
+            reverse        : if options.reverse?        then !!options.reverse        else false
+            keys           : if options.keys?           then !!options.keys           else true
+            values         : if options.values?         then !!options.values         else true
+            limit          : if options.limit?          then   options.limit          else -1
+            keyAsBuffer    : if options.keyAsBuffer?    then !!options.keyAsBuffer    else true
+            valueAsBuffer  : if options.valueAsBuffer?  then !!options.valueAsBuffer  else true
+            exclusiveStart : if options.exclusiveStart? then !!options.exclusiveStart else false
+
+        @_error  = null
+        @_cursor = @db._find4iterator @_options, (err) =>
+            @_error = err
+
+    _next: (callback) ->
+        if @_error?
+            @_cursor.close()
+            # @_ended = true # for superclass
+            # console.log "calling next() cb: error"
+            return callback err
+
+        if @_cursor.isClosed()
+            # @_ended = true # for superclass
+            # console.log "calling next() cb: closed"
+            return callback()
+
+        if @_ended
+            @_cursor.close()
+            # console.log "calling next() cb: ended"
+            return callback()
+
+        @_cursor.nextObject (err, item) =>
+            # console.log "next() -> err: #{err}, item: #{JS item}"
+
+            if err?
+                @_cursor.close()
+                # @_ended = true # for superclass
+                # console.log "calling next() cb: error"
+                return callback err
+
+            if !item?
+                @_cursor.close()
+                # @_ended = true # for superclass
+                # console.log "calling next() cb: error"
+                return callback()
+
+            {key, val} = item
+            
+            key = new buffer.Buffer key, "utf8" if @_options.keyAsBuffer
+            val = new buffer.Buffer val, "utf8" if @_options.valueAsBuffer
+
+            console.log "next() calling cb: #{JS {key, val}}"
+            callback null, key, val
 
 #-------------------------------------------------------------------------------
 JS = (object) -> JSON.stringify object
