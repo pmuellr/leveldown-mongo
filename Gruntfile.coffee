@@ -53,7 +53,7 @@ module.exports = (Grunt) ->
         build @
 
     grunt.registerTask "test", "run the tests", ->
-        test @
+        coffee "test.coffee"
 
     grunt.registerTask "clean", "remove transient files", ->
         clean @
@@ -76,7 +76,8 @@ build = (task) ->
 
 #-------------------------------------------------------------------------------
 test = (task) ->
-    coffee "test.coffee"
+    coffee "test-leveldown.coffee"
+
 
 #-------------------------------------------------------------------------------
 clean = ->
@@ -92,8 +93,9 @@ cleanDir = (dirs...) ->
 
 #-------------------------------------------------------------------------------
 
-coffee     = (parms) ->  exec "node_modules/.bin/coffee #{parms}"
-coffeec    = (parms) ->  coffee "--bare --compile #{parms}"
+coffee  = (parms) ->  exec "node_modules/.bin/coffee #{parms}"
+coffeec = (parms) ->  coffee "--bare --compile #{parms}"
+tap     = (parms) ->  exec "node_modules/.bin/tap #{parms}"
 
 #-------------------------------------------------------------------------------
 log = (message) ->

@@ -2,6 +2,9 @@
 
 DB_URL = process.env.DB_URL || "mongodb://localhost:27017/leveldown-mongo-tests"
 
+Math.randomOriginal = Math.random
+Math.random         = -> Math.floor(100 * Math.randomOriginal())
+
 path = require "path"
 
 test            = require "tape"
@@ -34,21 +37,36 @@ testCommon.cleanup  = (callback) ->
     mongodb.MongoClient.connect DB_URL, (err, mdb) ->
         mdb.dropDatabase callback if callback?
 
+# original collect entries converts numeric-ish keys to numbers!  stop it!
+testCommon.collectEntries = (iterator, callback) ->
+    data = []
+    next = ->
+        iterator.next (err, key, value) ->
+            return callback(err) if err
+
+            if (!arguments.length)
+                return iterator.end (err) ->
+                    callback(err, data)
+
+            data.push { key, value }
+            process.nextTick(next)
+
+    next()
 
 mongodb.MongoClient.connect DB_URL, (err, mdb) ->
-    # runTest mdb, "open-test", "args"
-    # runTest mdb, "open-test", "open"
-    # runTest mdb, "del-test"
-    # runTest mdb, "get-test"
-    # runTest mdb, "put-test"
-    # runTest mdb, "batch-test"
-    # runTest mdb, "close-test", "close"
+    runTest mdb, "open-test", "args"
+    runTest mdb, "open-test", "open"
+    runTest mdb, "del-test"
+    runTest mdb, "get-test"
+    runTest mdb, "put-test"
+    runTest mdb, "batch-test"
+    runTest mdb, "close-test", "close"
 
     runTest mdb, "iterator-test"
     # runTest mdb, "chained-batch-test"
     # runTest mdb, "ranges-test"
 
-    setTimeout (-> process.exit 0), 1 * 1000
+    setTimeout (-> process.exit 0), 10 * 1000
 
 #-------------------------------------------------------------------------------
 runTest = (mdb, name, fn="all") ->

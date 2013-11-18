@@ -1,13 +1,103 @@
 # Licensed under the Apache License. See footer for details.
 
-Debug = true
-
-buffer = require "buffer"
+Debug = !false
 
 _       = require "underscore"
+async   = require "async"
 mongodb = require "mongodb"
 
 AbstractLeveldown = require "abstract-leveldown"
+
+#-------------------------------------------------------------------------------
+# keys and values always stored as hex-encoded Buffers
+#    if a key/value is a String, type: "s", value = new Buffer(the-string)
+#    if a key/value is a Buffer, type: "b", value = the-buffer
+#    else                        type: "j", value = new Buffer(JSON.stringify(the-thing))
+#
+# implication is that we store a "type" with each key and val, and encode/decode
+# when coming out of mongodb
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+# abstract-leveldown converts keys and values to strings! Stop it!
+#-------------------------------------------------------------------------------
+AbstractLeveldown.AbstractLevelDOWN::get = (key, options, callback) ->
+  if (typeof options == 'function')
+    callback = options
+
+  if (typeof callback != 'function')
+    throw new Error('get() requires a callback argument')
+
+  if (err = this._checkKeyValue(key, 'key', this._isBuffer))
+    return callback(err)
+
+  #if (!this._isBuffer(key))
+  #  key = String(key)
+
+  if (typeof options != 'object')
+    options = {}
+
+  if (typeof this._get == 'function')
+    return this._get(key, options, callback)
+
+  process.nextTick(-> callback(new Error('NotFound')))
+
+#-------------------------------------------------------------------------------
+# abstract-leveldown converts keys and values to strings! Stop it!
+#-------------------------------------------------------------------------------
+AbstractLeveldown.AbstractLevelDOWN::put = (key, value, options, callback) ->
+
+  if (typeof options == 'function')
+    callback = options
+
+  if (typeof callback != 'function')
+    throw new Error('put() requires a callback argument')
+
+  if (err = this._checkKeyValue(key, 'key', this._isBuffer))
+    return callback(err)
+
+  if (err = this._checkKeyValue(value, 'value', this._isBuffer))
+    return callback(err)
+
+  #if (!this._isBuffer(key))
+  #  key = String(key)
+
+  # coerce value to string in node, don't touch it in browser
+  # (indexeddb can store any JS type)
+  #if (!this._isBuffer(value) && !process.browser)
+  #  value = String(value)
+
+  if (typeof options != 'object')
+    options = {}
+
+  if (typeof this._put == 'function')
+    return this._put(key, value, options, callback)
+
+  process.nextTick(callback)
+
+#-------------------------------------------------------------------------------
+# abstract-leveldown converts keys and values to strings! Stop it!
+#-------------------------------------------------------------------------------
+AbstractLeveldown.AbstractLevelDOWN::del = (key, options, callback) ->
+  if (typeof options == 'function')
+    callback = options
+
+  if (typeof callback != 'function')
+    throw new Error('del() requires a callback argument')
+
+  if (err = this._checkKeyValue(key, 'key', this._isBuffer))
+    return callback(err)
+
+  #if (!this._isBuffer(key))
+  #  key = String(key)
+
+  if (typeof options != 'object')
+    options = {}
+
+  if (typeof this._del == 'function')
+    return this._del(key, options, callback)
+
+  process.nextTick(callback)
 
 #-------------------------------------------------------------------------------
 # given a mongoDB DB() object, return a 
@@ -88,16 +178,16 @@ module.exports = (mdb) ->
 
             console.log "MongoLeveldown._get(#{@location}, #{JS key}, #{JS options})" if Debug
 
-            @coll.findOne {key}, (err, doc) =>
+            mongoDoc = toMongoDoc {key}
+
+            @coll.findOne mongoDoc, (err, doc) =>
                 return callback err if err?
 
                 console.log "_get(#{key}): #{JSON.stringify doc}" if Debug
                 unless doc?
                     return callback Error "NotFound"
 
-                val = doc.val
-                if options.asBuffer
-                    val = new buffer.Buffer(val, "utf8")
+                {val} = fromMongoDoc doc, {valAsBuffer: options.asBuffer}
 
                 return callback null, val
         
@@ -109,15 +199,15 @@ module.exports = (mdb) ->
 
             mdbOptions.fsync = true if options.sync
 
-            doc = {key, val}
-            doc.val = val.toString "utf8" if isBuffer val
+            mongoDoc = toMongoDoc {key, val}
+            keyDoc   = toMongoDoc {key}
 
-            console.log "_put(#{key}): #{JSON.stringify doc}" if Debug
+            console.log "_put(#{key}): #{JSON.stringify mongoDoc}" if Debug
 
-            @coll.remove {key}, mdbOptions, (err) =>
+            @coll.remove keyDoc, mdbOptions, (err) =>
                 return callback err if err?
 
-                @coll.insert doc, mdbOptions, (err) ->
+                @coll.insert mongoDoc, mdbOptions, (err) ->
                     return callback error if err?
                     callback()
         
@@ -129,7 +219,9 @@ module.exports = (mdb) ->
 
             mdbOptions.fsync = true if options.sync
 
-            @coll.remove {key}, mdbOptions, (err) ->
+            mongoDoc = toMongoDoc {key}
+
+            @coll.remove mongoDoc, mdbOptions, (err) ->
                 return callback err if err?
                 callback()
         
@@ -138,16 +230,17 @@ module.exports = (mdb) ->
             console.log "MongoLeveldown._batch(#{@location}, #{JS options})" if Debug
             console.log "#{JL array}" if Debug
 
-            for {type, key, value} in array
-                val = value
-                doc = {key, val}
-                if type is "del"
-                    @coll.remove {key}, {w:0}
-                else if type is "put"
-                    @coll.remove {key}, {w:0}
-                    @coll.insert doc, {w:0}
+            process = (item, callback) =>
+                {type, key, value} = item
 
-            process.nextTick ->callback()
+                if type is "del"
+                    @del key, options, callback
+                else if type is "put"
+                    @put key, value, options, callback
+
+            async.each array, process, (err) ->
+                return callback err if err?
+                callback()
         
         #-----------------------------------------------------------------------
         _approximateSize: (start, end, callback) ->
@@ -161,40 +254,72 @@ module.exports = (mdb) ->
         #-----------------------------------------------------------------------
         _find4iterator: (options, callback) ->
             fields = {}
-            fields.key = 1 if options.keys
-            fields.val = 1 if options.values
 
-            if options.limit isnt -1
-                fields.array = $slice: options.limit
+            delete options.end if options.end is ""
+            
+            if options.keys
+                fields.key     = 1 
+                fields.keyType = 1
+
+            if options.values
+                fields.val     = 1 
+                fields.valType = 1 
 
             query = {}
 
             if options.exclusiveStart
                 gtKey = "$gt"
+                ltKey = "$lt"
             else
                 gtKey = "$gte"
+                ltKey = "$lte"
 
-            if options.start? and options.end?
-                query.$and = [
-                    {key: {}}
-                    {key: $lte: options.end}
-                ]
-                query.$and[0][key][gtKey] = options.start
+            options.start = (toMongoDoc {key: options.start}).key if options.start
+            options.end   = (toMongoDoc {key: options.end}).key   if options.end
 
-            else if options.start?
-                query.key = {}
-                query.key[gtKey] = options.start
-            else if options.end?
-                query.key = $lte: options.end
+            if !options.reverse
+                if options.start? and options.end?
+                    query.$and = [
+                        {key: {}}
+                        {key: $lte: options.end}
+                    ]
+                    query.$and[0].key[gtKey] = options.start
 
-            console.log "coll.find(\n#{JL query},\n#{JL fields})"    
+                else if options.start?
+                    query.key = {}
+                    query.key[gtKey] = options.start
+
+                else if options.end?
+                    query.key = $lte: options.end
+
+            else
+                if options.start? and options.end?
+                    query.$and = [
+                        {key: {}}
+                        {key: $gte: options.end}
+                    ]
+                    query.$and[0].key[ltKey] = options.start
+
+                else if options.start?
+                    query.key = {}
+                    query.key[ltKey] = options.start
+
+                else if options.end?
+                    query.key = $gte: options.end
 
             if options.reverse
                 sortOrder = -1
             else
                 sortOrder =  1
 
-            return @coll.find(query, fields).sort(key:sortOrder)
+            findOptions =
+                sort: {key: sortOrder}
+
+            if options.limit isnt -1
+                findOptions.limit = options.limit
+
+            console.log "coll.find(#{JS query}, #{JS fields}, #{JS findOptions}), " # if Debug
+            return @coll.find(query, fields, findOptions)
 
 #-------------------------------------------------------------------------------
 class MongoLeveldownIterator extends AbstractLeveldown.AbstractIterator
@@ -258,21 +383,79 @@ class MongoLeveldownIterator extends AbstractLeveldown.AbstractIterator
                 # console.log "calling next() cb: error"
                 return callback()
 
-            {key, val} = item
+            {key, val} = fromMongoDoc item,
+                keyAsBuffer: @_options.keyAsBuffer
+                valAsBuffer: @_options.valueAsBuffer
             
-            key = new buffer.Buffer key, "utf8" if @_options.keyAsBuffer
-            val = new buffer.Buffer val, "utf8" if @_options.valueAsBuffer
+            console.log "next() calling cb: #{JS {key, val}}" if Debug
+            console.log "   key: ", key if Debug
+            console.log "   val: ", val if Debug
 
-            console.log "next() calling cb: #{JS {key, val}}"
             callback null, key, val
+
+        return
+
+#-------------------------------------------------------------------------------
+toMongoDoc = ({key, val}) ->
+    doc = {}
+
+    if key?
+        if Buffer.isBuffer key
+            doc.keyType = "b"
+            doc.key     = key.toString "hex"
+        else if typeof key is "string"
+            doc.keyType = "s"
+            doc.key     = (new Buffer(key)).toString("hex")
+        else 
+            doc.keyType = "j"
+            doc.key     = (new Buffer(JSON.stringify(key))).toString("hex")
+
+    if val?
+        if Buffer.isBuffer val
+            doc.valType = "b"
+            doc.val     = val.toString "hex"
+        else if typeof val is "string"
+            doc.valType = "s"
+            doc.val     = (new Buffer(val)).toString("hex")
+        else 
+            doc.valType = "j"
+            doc.val     = (new Buffer(JSON.stringify(val))).toString("hex")
+
+    return doc
+
+#-------------------------------------------------------------------------------
+fromMongoDoc = (doc, {keyAsBuffer, valAsBuffer}) ->
+    console.log "fromMongoDoc(#{JS doc}, {keyasBuffer:#{keyAsBuffer}, valAsBuffer:#{valAsBuffer})" if Debug
+    key = null
+    val = null
+
+    if doc.keyType? and doc.key?
+        buffer = new Buffer(doc.key, "hex")
+        if doc.keyType   is "b"  or keyAsBuffer
+            key = buffer
+        else if doc.keyType is "s"
+            key = buffer.toString()
+        else if doc.keyType is "j"
+            key = JSON.parse(buffer.toString())
+        else 
+            throw Error "invalid keyType: #{doc.keyType}"
+
+    if doc.valType? and doc.val?
+        buffer = new Buffer(doc.val, "hex")
+        if doc.valType   is "b" or valAsBuffer
+            val = buffer
+        else if doc.valType is "s"
+            val = buffer.toString()
+        else if doc.valType is "j"
+            val = JSON.parse(buffer.toString())
+        else 
+            throw Error "invalid valType: #{doc.valType}"
+
+    return {key, val}
 
 #-------------------------------------------------------------------------------
 JS = (object) -> JSON.stringify object
 JL = (object) -> JSON.stringify object, null, 4
-
-#-------------------------------------------------------------------------------
-isBuffer = (object) ->
-    return buffer.Buffer.isBuffer object
 
 #-------------------------------------------------------------------------------
 # Copyright 2013 Patrick Mueller
